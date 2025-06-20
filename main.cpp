@@ -4,6 +4,9 @@
 #include <filesystem>
 #include <chrono>
 #include <algorithm>
+#include <vector>      
+#include <map>         
+#include <set>
 
 
 using namespace std;
@@ -334,6 +337,129 @@ void mergeBranch(const string& branchName) {
     // Auto commit merge
     commit("Merged branch " + branchName);
 }
+void diffCommits(const string& hash1, const string& hash2) {
+    string path1 = ".minigit/objects/" + hash1;
+    string path2 = ".minigit/objects/" + hash2;
+
+    ifstream f1(path1), f2(path2);
+    if (!f1 || !f2) {
+        cout << "ERROR: One or both commits not found.\n";
+        return;
+    }
+
+    map<string, string> files1;
+    map<string, string> files2;
+
+    string line;
+    bool inFiles = false;
+
+    // Read files from first commit
+    while (getline(f1, line)) {
+        if (line == "files:") {
+            inFiles = true;
+            continue;
+        }
+        if (inFiles && !line.empty()) {
+            stringstream ss(line);
+            string filename, hash;
+            ss >> filename >> hash;
+            files1[filename] = hash;
+        }
+    }
+
+    inFiles = false;
+    // Read files from second commit
+    while (getline(f2, line)) {
+        if (line == "files:") {
+            inFiles = true;
+            continue;
+        }
+        if (inFiles && !line.empty()) {
+            stringstream ss(line);
+            string filename, hash;
+            ss >> filename >> hash;
+            files2[filename] = hash;
+        }
+    }
+
+    // Collect all filenames appearing in either commit
+    set<string> allFiles;
+    for (const auto& [f, _] : files1) allFiles.insert(f);
+    for (const auto& [f, _] : files2) allFiles.insert(f);
+
+    for (const string& file : allFiles) {
+        cout << "File: " << file << "\n";
+
+        bool inFirst = files1.count(file) > 0;
+        bool inSecond = files2.count(file) > 0;
+
+        // Helper lambda to read blob content or empty if missing
+        auto readBlob = [](const string& blobHash) -> string {
+            if (blobHash.empty()) return "";
+            ifstream blobFile(".minigit/objects/" + blobHash);
+            if (!blobFile) return "";
+            stringstream buffer;
+            buffer << blobFile.rdbuf();
+            return buffer.str();
+        };
+
+        string content1 = inFirst ? readBlob(files1[file]) : "";
+        string content2 = inSecond ? readBlob(files2[file]) : "";
+
+        // Case 1: File only in first commit (deleted in second)
+        if (inFirst && !inSecond) {
+            // Show entire content1 as removed
+            stringstream ss(content1);
+            string line;
+            while (getline(ss, line)) {
+                cout << "  - " << line << "\n";
+            }
+            if (content1.empty()) cout << "  - (empty file)\n";
+            cout << "\n";
+            continue;
+        }
+
+        // Case 2: File only in second commit (added)
+        if (!inFirst && inSecond) {
+            // Show entire content2 as added
+            stringstream ss(content2);
+            string line;
+            while (getline(ss, line)) {
+                cout << "  + " << line << "\n";
+            }
+            if (content2.empty()) cout << "  + (empty file)\n";
+            cout << "\n";
+            continue;
+        }
+
+        // Case 3: File in both commits - compare content line-by-line
+        if (content1 == content2) {
+            cout << "  No changes.\n\n";
+            continue;
+        }
+
+        vector<string> lines1, lines2;
+        {
+            stringstream ss1(content1), ss2(content2);
+            string temp;
+            while (getline(ss1, temp)) lines1.push_back(temp);
+            while (getline(ss2, temp)) lines2.push_back(temp);
+        }
+
+        size_t maxLines = max(lines1.size(), lines2.size());
+        for (size_t i = 0; i < maxLines; ++i) {
+            string l1 = (i < lines1.size()) ? lines1[i] : "";
+            string l2 = (i < lines2.size()) ? lines2[i] : "";
+
+            if (l1 != l2) {
+                cout << "  - " << l1 << "\n";
+                cout << "  + " << l2 << "\n";
+            }
+        }
+        cout << "\n";
+    }
+}
+
 
 
 
@@ -349,29 +475,33 @@ int main() {
         cout << "minigit> ";
         getline(cin, command);
 
-        // Fix for carriage return (common on Windows)
         if (!command.empty() && command.back() == '\r')
             command.pop_back();
 
         if (command == "init") {
             init();
         } else if (command.rfind("add ", 0) == 0) {
-            string filename = command.substr(4);
-            addFile(filename);
+            addFile(command.substr(4));
         } else if (command.rfind("commit -m ", 0) == 0) {
-            string message = command.substr(10);
-            commit(message);
+            commit(command.substr(10));
         } else if (command == "log") {
             showLog();
         } else if (command.rfind("branch ", 0) == 0) {
-            string branchName = command.substr(7);
-            createBranch(branchName);
+            createBranch(command.substr(7));
         } else if (command.rfind("checkout ", 0) == 0) {
-            string branchName = command.substr(9);
-            checkoutBranch(branchName);
+            checkoutBranch(command.substr(9));
         } else if (command.rfind("merge ", 0) == 0) {
-            string branchName = command.substr(6);
-            mergeBranch(branchName);
+            mergeBranch(command.substr(6));
+        } else if (command.rfind("diff ", 0) == 0) {
+            string args = command.substr(5);
+            size_t space = args.find(' ');
+            if (space == string::npos) {
+                cout << "Usage: diff <commit1> <commit2>\n";
+            } else {
+                string hash1 = args.substr(0, space);
+                string hash2 = args.substr(space + 1);
+                diffCommits(hash1, hash2);
+            }
         } else if (command == "exit") {
             break;
         } else {
